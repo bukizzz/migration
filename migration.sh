@@ -45,7 +45,7 @@ select_mapper() {
     printf "Available mapped devices:\n" >&2
     for i in "${!mappers[@]}"; do
         # Show mount status for each mapper
-        if mount | grep -q "/dev/mapper/${mappers[$i]}" 2>/dev/null; then
+        if lsblk -no MOUNTPOINTS "/dev/mapper/${mappers[$i]}" 2>/dev/null | grep -q .; then
             mount_info=" (mounted)"
         else
             mount_info=" (not mounted)"
