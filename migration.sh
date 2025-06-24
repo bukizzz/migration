@@ -12,13 +12,37 @@ SRC_MOUNT="/mnt/migration_source"
 DEST_PART="/dev/nvme0n1p3"
 DEST_MOUNT="/mnt/migration_target"
 
+# Subvolumes to skip during migration
+SKIP_PATTERNS=("*swap*" "@swap" "*snapshots*" "@snapshots" "@.snapshots")
+
+# ======================
+# UTILITY FUNCTIONS
+# ======================
+
+# Function to check if a subvolume should be skipped
+should_skip_subvolume() {
+    local subvol="$1"
+    
+    for pattern in "${SKIP_PATTERNS[@]}"; do
+        if [[ "$subvol" == $pattern ]]; then
+            return 0  # Should skip
+        fi
+    done
+    return 1  # Should not skip
+}
+
+# Function to log with timestamp
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+}
+
 # ======================
 # INITIALIZATION
 # ======================
 
-echo "=== Migration Script Start ==="
-echo "Source: $SRC_PART → $SRC_MOUNT"
-echo "Destination: $DEST_PART → $DEST_MOUNT"
+log "=== Migration Script Start ==="
+log "Source: $SRC_PART → $SRC_MOUNT"
+log "Destination: $DEST_PART → $DEST_MOUNT"
 echo
 
 # ======================
@@ -75,11 +99,11 @@ select_mapper() {
 }
 
 # Determine which device to use for mounting
-echo "[…] Checking for available devices..."
+log "[…] Checking for available devices..."
 
 # Check if source partition is already mounted directly
 if mount | grep -q "$SRC_PART"; then
-    echo "[✖] ERROR: $SRC_PART appears to be mounted directly. Cannot proceed."
+    log "[✖] ERROR: $SRC_PART appears to be mounted directly. Cannot proceed."
     exit 1
 fi
 
@@ -88,25 +112,25 @@ SELECTED_DEVICE=$(select_mapper)
 if [ $? -ne 0 ]; then
     # No mappers available, check if we can use source directly or unlock it
     if lsblk -no FSTYPE "$SRC_PART" | grep -q "crypto_LUKS"; then
-        echo "[…] No mappers available. Unlocking encrypted partition $SRC_PART as $MAPPER_NAME"
+        log "[…] No mappers available. Unlocking encrypted partition $SRC_PART as $MAPPER_NAME"
         cryptsetup open "$SRC_PART" "$MAPPER_NAME"
-        echo "[✔] Unlocked successfully"
+        log "[✔] Unlocked successfully"
         DEVICE_TO_MOUNT="/dev/mapper/$MAPPER_NAME"
     else
-        echo "[…] No mappers available. Using unencrypted partition $SRC_PART directly"
+        log "[…] No mappers available. Using unencrypted partition $SRC_PART directly"
         DEVICE_TO_MOUNT="$SRC_PART"
     fi
 elif [ "$SELECTED_DEVICE" = "direct" ]; then
     DEVICE_TO_MOUNT="$SRC_PART"
-    echo "[…] Using $SRC_PART directly"
+    log "[…] Using $SRC_PART directly"
 else
     DEVICE_TO_MOUNT="/dev/mapper/$SELECTED_DEVICE"
-    echo "[✔] Using existing mapper: $DEVICE_TO_MOUNT"
+    log "[✔] Using existing mapper: $DEVICE_TO_MOUNT"
 fi
 
 # Verify device exists
 if [ ! -b "$DEVICE_TO_MOUNT" ]; then
-    echo "[✖] ERROR: No device at $DEVICE_TO_MOUNT"
+    log "[✖] ERROR: No device at $DEVICE_TO_MOUNT"
     exit 1
 fi
 
@@ -114,9 +138,9 @@ fi
 mkdir -p "$SRC_MOUNT"
 if ! mountpoint -q "$SRC_MOUNT"; then
     mount "$DEVICE_TO_MOUNT" "$SRC_MOUNT"
-    echo "[✔] Mounted $DEVICE_TO_MOUNT at $SRC_MOUNT"
+    log "[✔] Mounted $DEVICE_TO_MOUNT at $SRC_MOUNT"
 else
-    echo "[✔] Source already mounted at $SRC_MOUNT"
+    log "[✔] Source already mounted at $SRC_MOUNT"
 fi
 
 # ======================
@@ -124,40 +148,40 @@ fi
 # ======================
 
 echo
-echo "=== Preparing Destination Drive ==="
+log "=== Preparing Destination Drive ==="
 
 # Check if destination is encrypted and needs unlocking
 DEST_MAPPER_NAME="migration_target"
 DEST_DEVICE=""
 
 if [ -e "/dev/mapper/$DEST_MAPPER_NAME" ]; then
-    echo "[✔] Destination already mapped as /dev/mapper/$DEST_MAPPER_NAME"
+    log "[✔] Destination already mapped as /dev/mapper/$DEST_MAPPER_NAME"
     DEST_DEVICE="/dev/mapper/$DEST_MAPPER_NAME"
 else
     # Check if it's encrypted
     if lsblk -no FSTYPE "$DEST_PART" | grep -q "crypto_LUKS"; then
-        echo "[…] Unlocking encrypted destination $DEST_PART as $DEST_MAPPER_NAME"
+        log "[…] Unlocking encrypted destination $DEST_PART as $DEST_MAPPER_NAME"
         cryptsetup open "$DEST_PART" "$DEST_MAPPER_NAME"
-        echo "[✔] Destination unlocked successfully"
+        log "[✔] Destination unlocked successfully"
         DEST_DEVICE="/dev/mapper/$DEST_MAPPER_NAME"
     else
-        echo "[…] Using unencrypted destination $DEST_PART directly"
+        log "[…] Using unencrypted destination $DEST_PART directly"
         DEST_DEVICE="$DEST_PART"
     fi
 fi
 
 # Format destination as Btrfs (this wipes it clean every time)
-echo "[…] Formatting destination as Btrfs (this will erase all data)"
+log "[…] Formatting destination as Btrfs (this will erase all data)"
 mkfs.btrfs -f "$DEST_DEVICE"
-echo "[✔] Destination formatted as Btrfs"
+log "[✔] Destination formatted as Btrfs"
 
 # Mount destination
 mkdir -p "$DEST_MOUNT"
 if ! mountpoint -q "$DEST_MOUNT"; then
     mount "$DEST_DEVICE" "$DEST_MOUNT"
-    echo "[✔] Mounted destination at $DEST_MOUNT"
+    log "[✔] Mounted destination at $DEST_MOUNT"
 else
-    echo "[✔] Destination already mounted at $DEST_MOUNT"
+    log "[✔] Destination already mounted at $DEST_MOUNT"
 fi
 
 # ======================
@@ -165,59 +189,147 @@ fi
 # ======================
 
 echo
-echo "=== Beginning Btrfs Subvolume Migration ==="
+log "=== Beginning Btrfs Subvolume Migration ==="
 
 # Discover source subvolumes
 mapfile -t SUBVOLUMES < <(btrfs subvolume list -o "$SRC_MOUNT" | awk '{print $9}')
 
 if [ "${#SUBVOLUMES[@]}" -eq 0 ]; then
-    echo "[✖] ERROR: No subvolumes found in $SRC_MOUNT"
+    log "[✖] ERROR: No subvolumes found in $SRC_MOUNT"
     exit 1
 fi
 
-echo "[…] Found ${#SUBVOLUMES[@]} subvolumes to migrate"
+log "[…] Found ${#SUBVOLUMES[@]} subvolumes total"
+
+# Count subvolumes that will be migrated
+MIGRATE_COUNT=0
+SKIP_COUNT=0
 
 for SUBVOL in "${SUBVOLUMES[@]}"; do
-    echo "[→] Migrating subvolume: $SUBVOL"
+    if should_skip_subvolume "$SUBVOL"; then
+        ((SKIP_COUNT++))
+    else
+        ((MIGRATE_COUNT++))
+    fi
+done
+
+log "[…] Will migrate $MIGRATE_COUNT subvolumes, skipping $SKIP_COUNT"
+echo
+
+# Migration counters
+MIGRATED=0
+FAILED=0
+
+for SUBVOL in "${SUBVOLUMES[@]}"; do
+    log "[→] Processing subvolume: $SUBVOL"
+
+    # Check if this subvolume should be skipped
+    if should_skip_subvolume "$SUBVOL"; then
+        log "[!] Skipping subvolume: $SUBVOL (matches skip pattern)"
+        echo
+        continue
+    fi
 
     SRC_PATH="$SRC_MOUNT/$SUBVOL"
     SNAPSHOT_NAME="${SUBVOL}_snapshot_$(date +%s)"
     SNAPSHOT_PATH="$SRC_MOUNT/$SNAPSHOT_NAME"
 
-    # Create read-only snapshot
-    echo "[…] Creating read-only snapshot: $SNAPSHOT_NAME"
-    btrfs subvolume snapshot -r "$SRC_PATH" "$SNAPSHOT_PATH"
+    # Verify source subvolume exists
+    if [ ! -d "$SRC_PATH" ]; then
+        log "[!] WARNING: Source path $SRC_PATH does not exist - skipping"
+        ((FAILED++))
+        echo
+        continue
+    fi
+
+    # Create read-only snapshot with error handling
+    log "[…] Creating read-only snapshot: $SNAPSHOT_NAME"
+    if ! btrfs subvolume snapshot -r "$SRC_PATH" "$SNAPSHOT_PATH" 2>/dev/null; then
+        log "[!] WARNING: Failed to create snapshot of $SUBVOL (likely in use or inaccessible)"
+        ((FAILED++))
+        echo
+        continue
+    fi
     
-    # Send snapshot to destination
-    echo "[…] Sending snapshot to destination"
-    btrfs send "$SNAPSHOT_PATH" | btrfs receive "$DEST_MOUNT"
+    # Send snapshot to destination with error handling
+    log "[…] Sending snapshot to destination"
+    if ! btrfs send "$SNAPSHOT_PATH" 2>/dev/null | btrfs receive "$DEST_MOUNT" 2>/dev/null; then
+        log "[!] WARNING: Failed to send $SUBVOL to destination"
+        # Clean up the temporary snapshot
+        if [ -d "$SNAPSHOT_PATH" ]; then
+            btrfs subvolume delete "$SNAPSHOT_PATH" 2>/dev/null || true
+        fi
+        ((FAILED++))
+        echo
+        continue
+    fi
     
     # Rename received snapshot to original name
     if [ -d "$DEST_MOUNT/$SNAPSHOT_NAME" ]; then
-        echo "[…] Renaming received snapshot to $SUBVOL"
-        mv "$DEST_MOUNT/$SNAPSHOT_NAME" "$DEST_MOUNT/$SUBVOL"
+        log "[…] Renaming received snapshot to $SUBVOL"
+        if ! mv "$DEST_MOUNT/$SNAPSHOT_NAME" "$DEST_MOUNT/$SUBVOL" 2>/dev/null; then
+            log "[!] WARNING: Failed to rename snapshot for $SUBVOL"
+            # Try to clean up
+            btrfs subvolume delete "$DEST_MOUNT/$SNAPSHOT_NAME" 2>/dev/null || true
+            btrfs subvolume delete "$SNAPSHOT_PATH" 2>/dev/null || true
+            ((FAILED++))
+            echo
+            continue
+        fi
+    else
+        log "[!] WARNING: Expected snapshot $SNAPSHOT_NAME not found at destination"
+        # Clean up source snapshot
+        btrfs subvolume delete "$SNAPSHOT_PATH" 2>/dev/null || true
+        ((FAILED++))
+        echo
+        continue
     fi
     
     # Clean up the temporary snapshot
-    echo "[…] Cleaning up temporary snapshot"
-    btrfs subvolume delete "$SNAPSHOT_PATH"
+    log "[…] Cleaning up temporary snapshot"
+    if ! btrfs subvolume delete "$SNAPSHOT_PATH" 2>/dev/null; then
+        log "[!] WARNING: Failed to clean up temporary snapshot $SNAPSHOT_PATH"
+        # Non-fatal, continue
+    fi
     
-    echo "[✔] Migrated $SUBVOL"
+    log "[✔] Successfully migrated $SUBVOL"
+    ((MIGRATED++))
+    echo
 done
 
 echo
-echo "=== Btrfs Migration Complete ==="
+log "=== Btrfs Migration Complete ==="
+log "Successfully migrated: $MIGRATED subvolumes"
+log "Failed migrations: $FAILED subvolumes"
+log "Skipped: $SKIP_COUNT subvolumes"
 
 # ======================
 # OPTIONAL CLEANUP
 # ======================
 
-# umount "$SRC_MOUNT"
-# cryptsetup close "$MAPPER_NAME"
-# umount "$DEST_MOUNT"
+# Uncomment these lines if you want automatic cleanup
+# log "[…] Cleaning up mounts and mappings"
+# umount "$SRC_MOUNT" 2>/dev/null || true
+# umount "$DEST_MOUNT" 2>/dev/null || true
+# cryptsetup close "$MAPPER_NAME" 2>/dev/null || true
+# cryptsetup close "$DEST_MAPPER_NAME" 2>/dev/null || true
 
 # ======================
-# END
+# SUMMARY
 # ======================
 
-echo "=== Migration Script Completed ==="
+echo
+log "=== Migration Summary ==="
+log "Total subvolumes found: ${#SUBVOLUMES[@]}"
+log "Successfully migrated: $MIGRATED"
+log "Failed migrations: $FAILED"
+log "Skipped (swap/snapshots): $SKIP_COUNT"
+
+if [ $FAILED -gt 0 ]; then
+    log "[!] Some migrations failed. Check the log above for details."
+    exit 1
+else
+    log "[✔] All eligible subvolumes migrated successfully!"
+fi
+
+log "=== Migration Script Completed ==="
