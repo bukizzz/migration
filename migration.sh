@@ -30,9 +30,12 @@ select_mapper() {
     local mappers=()
     
     # Get all available mappers (excluding control)
-    while IFS= read -r mapper; do
-        [[ "$mapper" != "control" ]] && mappers+=("$mapper")
-    done < <(ls /dev/mapper/ 2>/dev/null | sort)
+    for mapper in /dev/mapper/*; do
+        mapper_name=$(basename "$mapper")
+        if [[ "$mapper_name" != "control" ]]; then
+            mappers+=("$mapper_name")
+        fi
+    done
     
     if [ ${#mappers[@]} -eq 0 ]; then
         echo "[!] No mapped devices found."
@@ -41,16 +44,22 @@ select_mapper() {
     
     echo "Available mapped devices:"
     for i in "${!mappers[@]}"; do
-        echo "  $((i+1)). ${mappers[$i]}"
+        # Show mount status for each mapper
+        if mount | grep -q "/dev/mapper/${mappers[$i]}"; then
+            mount_info=" (mounted)"
+        else
+            mount_info=" (not mounted)"
+        fi
+        echo "  $((i+1)). ${mappers[$i]}${mount_info}"
     done
-    echo "  $((${#mappers[@]}+1)). Don't use a mapper (use $SRC_PART directly)"
+    echo "  $((${#mappers[@]}+1)). Don't use a mapper (unlock $SRC_PART or use directly)"
     echo
     
     while true; do
         read -p "Select device to use (1-$((${#mappers[@]}+1))): " choice
         if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le $((${#mappers[@]}+1)) ]; then
             if [ "$choice" -eq $((${#mappers[@]}+1)) ]; then
-                # User chose to use source partition directly
+                # User chose to use source partition directly or unlock it
                 echo "direct"
                 return 0
             else
