@@ -29,40 +29,35 @@ echo
 select_mapper() {
     local mappers=()
     
-    echo "[DEBUG] Starting mapper detection..."
-    
     # Get all available mappers (excluding control)
     for mapper in /dev/mapper/*; do
         mapper_name=$(basename "$mapper")
-        echo "[DEBUG] Found: $mapper_name"
         if [[ "$mapper_name" != "control" ]]; then
             mappers+=("$mapper_name")
-            echo "[DEBUG] Added: $mapper_name"
         fi
     done
     
-    echo "[DEBUG] Total mappers found: ${#mappers[@]}"
-    
     if [ ${#mappers[@]} -eq 0 ]; then
-        echo "[!] No mapped devices found."
+        printf "[!] No mapped devices found.\n" >&2
         return 1
     fi
     
-    echo "Available mapped devices:"
+    printf "Available mapped devices:\n" >&2
     for i in "${!mappers[@]}"; do
         # Show mount status for each mapper
-        if mount | grep -q "/dev/mapper/${mappers[$i]}"; then
+        if mount | grep -q "/dev/mapper/${mappers[$i]}" 2>/dev/null; then
             mount_info=" (mounted)"
         else
             mount_info=" (not mounted)"
         fi
-        echo "  $((i+1)). ${mappers[$i]}${mount_info}"
+        printf "  %d. %s%s\n" "$((i+1))" "${mappers[$i]}" "$mount_info" >&2
     done
-    echo "  $((${#mappers[@]}+1)). Don't use a mapper (unlock $SRC_PART or use directly)"
-    echo
+    printf "  %d. Don't use a mapper (unlock %s or use directly)\n" "$((${#mappers[@]}+1))" "$SRC_PART" >&2
+    printf "\n" >&2
     
     while true; do
-        read -p "Select device to use (1-$((${#mappers[@]}+1))): " choice
+        printf "Select device to use (1-%d): " "$((${#mappers[@]}+1))" >&2
+        read choice
         if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le $((${#mappers[@]}+1)) ]; then
             if [ "$choice" -eq $((${#mappers[@]}+1)) ]; then
                 # User chose to use source partition directly or unlock it
@@ -74,7 +69,7 @@ select_mapper() {
                 return 0
             fi
         else
-            echo "Invalid choice. Please enter a number between 1 and $((${#mappers[@]}+1))."
+            printf "Invalid choice. Please enter a number between 1 and %d.\n" "$((${#mappers[@]}+1))" >&2
         fi
     done
 }
