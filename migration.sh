@@ -45,6 +45,7 @@ mkfs.btrfs -f /dev/mapper/migration_target
 mount -o subvolid=5,noatime /dev/mapper/migration_source "$TEMP_MOUNT_SOURCE"
 mount -o subvolid=5,noatime /dev/mapper/migration_target "$TEMP_MOUNT_TARGET"
 
+# === SUBVOLUME COPY ===
 btrfs subvolume list -o "$TEMP_MOUNT_SOURCE" > /tmp/subvols.txt
 while IFS= read -r line; do
     subvol=$(echo "$line" | sed 's/.*path //')
@@ -64,7 +65,6 @@ NEW_BTRFS_UUID=$(btrfs filesystem show /dev/mapper/migration_target | grep uuid:
 NEW_BOOT_UUID=$(blkid -s UUID -o value "${TARGET_DRIVE}p1")
 NEW_EFI_UUID=$(blkid -s UUID -o value "${TARGET_DRIVE}p2")
 
-# Replace these manually if known or parse them from original config
 OLD_LUKS_UUID="f870024d-954c-4f90-9b99-2a97504959ad"
 OLD_BTRFS_UUID="2ae45103-bf20-493b-bf0f-9dca55dac51b"
 OLD_BOOT_UUID="8688eff0-0b08-4bab-ac21-c53946969523"
