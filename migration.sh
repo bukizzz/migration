@@ -439,7 +439,7 @@ fi
 # umount "$SRC_MOUNT" 2>/dev/null || true
 # umount "$DEST_MOUNT" 2>/dev/null || true
 # cryptsetup close "$MAPPER_NAME" 2>/dev/null || true
-cryptsetup close "$DEST_MAPPER_NAME" 2>/dev/null || true
+# cryptsetup close "$DEST_MAPPER_NAME" 2>/dev/null || true
 
 # ======================
 # SUMMARY
