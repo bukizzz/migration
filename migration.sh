@@ -120,12 +120,41 @@ else
 fi
 
 # ======================
-# MOUNT DESTINATION
+# PREPARE AND MOUNT DESTINATION
 # ======================
 
+echo
+echo "=== Preparing Destination Drive ==="
+
+# Check if destination is encrypted and needs unlocking
+DEST_MAPPER_NAME="migration_target"
+DEST_DEVICE=""
+
+if [ -e "/dev/mapper/$DEST_MAPPER_NAME" ]; then
+    echo "[✔] Destination already mapped as /dev/mapper/$DEST_MAPPER_NAME"
+    DEST_DEVICE="/dev/mapper/$DEST_MAPPER_NAME"
+else
+    # Check if it's encrypted
+    if lsblk -no FSTYPE "$DEST_PART" | grep -q "crypto_LUKS"; then
+        echo "[…] Unlocking encrypted destination $DEST_PART as $DEST_MAPPER_NAME"
+        cryptsetup open "$DEST_PART" "$DEST_MAPPER_NAME"
+        echo "[✔] Destination unlocked successfully"
+        DEST_DEVICE="/dev/mapper/$DEST_MAPPER_NAME"
+    else
+        echo "[…] Using unencrypted destination $DEST_PART directly"
+        DEST_DEVICE="$DEST_PART"
+    fi
+fi
+
+# Format destination as Btrfs (this wipes it clean every time)
+echo "[…] Formatting destination as Btrfs (this will erase all data)"
+mkfs.btrfs -f "$DEST_DEVICE"
+echo "[✔] Destination formatted as Btrfs"
+
+# Mount destination
 mkdir -p "$DEST_MOUNT"
 if ! mountpoint -q "$DEST_MOUNT"; then
-    mount "$DEST_PART" "$DEST_MOUNT"
+    mount "$DEST_DEVICE" "$DEST_MOUNT"
     echo "[✔] Mounted destination at $DEST_MOUNT"
 else
     echo "[✔] Destination already mounted at $DEST_MOUNT"
