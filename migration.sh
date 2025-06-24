@@ -342,6 +342,9 @@ update_bootloader() {
     umount "$TEMP_MOUNT_TARGET/boot/efi" 2>/dev/null || true
     umount "$TEMP_MOUNT_TARGET/boot" 2>/dev/null || true
 }
+
+# Cleanup function - FIXED: Added proper function declaration
+cleanup() {
     log "Cleaning up..."
     
     # Unmount filesystems
