@@ -305,6 +305,132 @@ log "Failed migrations: $FAILED subvolumes"
 log "Skipped: $SKIP_COUNT subvolumes"
 
 # ======================
+# BOOTLOADER CONFIGURATION
+# ======================
+
+if [ $MIGRATED -gt 0 ] && [ $FAILED -eq 0 ]; then
+    echo
+    log "=== Configuring Bootloader ==="
+    
+    # Find the root subvolume (usually @ or root)
+    ROOT_SUBVOL=""
+    if [ -d "$DEST_MOUNT/@" ]; then
+        ROOT_SUBVOL="@"
+    elif [ -d "$DEST_MOUNT/root" ]; then
+        ROOT_SUBVOL="root"
+    else
+        # Try to find any subvolume that looks like root
+        for subvol in "$DEST_MOUNT"/*; do
+            if [ -d "$subvol" ] && [ -d "$subvol/etc" ] && [ -d "$subvol/usr" ]; then
+                ROOT_SUBVOL=$(basename "$subvol")
+                break
+            fi
+        done
+    fi
+    
+    if [ -z "$ROOT_SUBVOL" ]; then
+        log "[!] WARNING: Could not identify root subvolume. Skipping bootloader configuration."
+        log "[!] You will need to manually configure GRUB and initramfs."
+    else
+        log "[…] Found root subvolume: $ROOT_SUBVOL"
+        
+        # Create temporary mount point for chroot
+        CHROOT_MOUNT="/mnt/migration_chroot"
+        mkdir -p "$CHROOT_MOUNT"
+        
+        # Mount root subvolume for chroot
+        log "[…] Mounting root subvolume for chroot"
+        if mount -o subvol="$ROOT_SUBVOL" "$DEST_DEVICE" "$CHROOT_MOUNT"; then
+            log "[✔] Root subvolume mounted at $CHROOT_MOUNT"
+            
+            # Mount essential filesystems for chroot
+            log "[…] Mounting essential filesystems for chroot"
+            mount --bind /dev "$CHROOT_MOUNT/dev" || true
+            mount --bind /proc "$CHROOT_MOUNT/proc" || true
+            mount --bind /sys "$CHROOT_MOUNT/sys" || true
+            mount --bind /run "$CHROOT_MOUNT/run" || true
+            
+            # Mount EFI partition if it exists
+            EFI_PART=""
+            if [ -d "/boot/efi" ] && mountpoint -q "/boot/efi"; then
+                EFI_PART=$(findmnt -n -o SOURCE /boot/efi 2>/dev/null || true)
+                if [ -n "$EFI_PART" ]; then
+                    mkdir -p "$CHROOT_MOUNT/boot/efi"
+                    mount "$EFI_PART" "$CHROOT_MOUNT/boot/efi" || true
+                    log "[✔] EFI partition mounted"
+                fi
+            fi
+            
+            # Update initramfs
+            log "[…] Updating initramfs in chroot environment"
+            if chroot "$CHROOT_MOUNT" /bin/bash -c "update-initramfs -u -k all" 2>/dev/null; then
+                log "[✔] Initramfs updated successfully"
+            else
+                log "[!] WARNING: Failed to update initramfs"
+            fi
+            
+            # Update GRUB configuration
+            log "[…] Updating GRUB configuration"
+            if chroot "$CHROOT_MOUNT" /bin/bash -c "update-grub" 2>/dev/null; then
+                log "[✔] GRUB configuration updated"
+            else
+                log "[!] WARNING: Failed to update GRUB configuration"
+            fi
+            
+            # Install GRUB to the target disk (get disk from partition)
+            TARGET_DISK=$(lsblk -no PKNAME "$DEST_PART" 2>/dev/null | head -1)
+            if [ -n "$TARGET_DISK" ]; then
+                log "[…] Installing GRUB to /dev/$TARGET_DISK"
+                if chroot "$CHROOT_MOUNT" /bin/bash -c "grub-install /dev/$TARGET_DISK" 2>/dev/null; then
+                    log "[✔] GRUB installed successfully"
+                else
+                    log "[!] WARNING: Failed to install GRUB"
+                fi
+            else
+                log "[!] WARNING: Could not determine target disk for GRUB installation"
+            fi
+            
+            # Update fstab if necessary
+            log "[…] Checking and updating fstab"
+            FSTAB_PATH="$CHROOT_MOUNT/etc/fstab"
+            if [ -f "$FSTAB_PATH" ]; then
+                # Backup original fstab
+                cp "$FSTAB_PATH" "$FSTAB_PATH.backup.$(date +%s)"
+                
+                # Update fstab with new device UUID
+                DEST_UUID=$(blkid -s UUID -o value "$DEST_DEVICE" 2>/dev/null || true)
+                if [ -n "$DEST_UUID" ]; then
+                    log "[…] Updating fstab with new UUID: $DEST_UUID"
+                    # This is a basic update - you may need to customize based on your fstab format
+                    sed -i.bak "s|UUID=[a-f0-9-]*|UUID=$DEST_UUID|g" "$FSTAB_PATH"
+                    log "[✔] fstab updated"
+                else
+                    log "[!] WARNING: Could not get UUID for destination device"
+                fi
+            else
+                log "[!] WARNING: No fstab found at $FSTAB_PATH"
+            fi
+            
+            # Cleanup chroot mounts
+            log "[…] Cleaning up chroot mounts"
+            umount "$CHROOT_MOUNT/boot/efi" 2>/dev/null || true
+            umount "$CHROOT_MOUNT/run" 2>/dev/null || true
+            umount "$CHROOT_MOUNT/sys" 2>/dev/null || true
+            umount "$CHROOT_MOUNT/proc" 2>/dev/null || true
+            umount "$CHROOT_MOUNT/dev" 2>/dev/null || true
+            umount "$CHROOT_MOUNT" 2>/dev/null || true
+            
+            log "[✔] Bootloader configuration completed"
+        else
+            log "[!] WARNING: Failed to mount root subvolume for chroot"
+            log "[!] You will need to manually configure GRUB and initramfs"
+        fi
+    fi
+else
+    log "[!] Skipping bootloader configuration due to migration failures"
+fi
+
+# ======================
 # OPTIONAL CLEANUP
 # ======================
 
@@ -313,7 +439,7 @@ log "Skipped: $SKIP_COUNT subvolumes"
 # umount "$SRC_MOUNT" 2>/dev/null || true
 # umount "$DEST_MOUNT" 2>/dev/null || true
 # cryptsetup close "$MAPPER_NAME" 2>/dev/null || true
-# cryptsetup close "$DEST_MAPPER_NAME" 2>/dev/null || true
+cryptsetup close "$DEST_MAPPER_NAME" 2>/dev/null || true
 
 # ======================
 # SUMMARY
