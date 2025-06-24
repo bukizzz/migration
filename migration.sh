@@ -12,9 +12,6 @@ SRC_MOUNT="/mnt/migration_source"
 DEST_PART="/dev/nvme0n1p3"
 DEST_MOUNT="/mnt/migration_target"
 
-# Subvolumes to skip during migration
-SKIP_PATTERNS=("*swap*" "@swap" "*snapshots*" "@snapshots" "@.snapshots")
-
 # ======================
 # UTILITY FUNCTIONS
 # ======================
@@ -23,11 +20,12 @@ SKIP_PATTERNS=("*swap*" "@swap" "*snapshots*" "@snapshots" "@.snapshots")
 should_skip_subvolume() {
     local subvol="$1"
     
-    for pattern in "${SKIP_PATTERNS[@]}"; do
-        if [[ "$subvol" == $pattern ]]; then
-            return 0  # Should skip
-        fi
-    done
+    # Check each skip pattern
+    if [[ "$subvol" == *"swap"* ]] || [[ "$subvol" == "@swap" ]] || \
+       [[ "$subvol" == *"snapshots"* ]] || [[ "$subvol" == "@snapshots" ]] || \
+       [[ "$subvol" == "@.snapshots" ]]; then
+        return 0  # Should skip
+    fi
     return 1  # Should not skip
 }
 
@@ -205,11 +203,14 @@ log "[…] Found ${#SUBVOLUMES[@]} subvolumes total"
 MIGRATE_COUNT=0
 SKIP_COUNT=0
 
+log "[…] Analyzing subvolumes..."
 for SUBVOL in "${SUBVOLUMES[@]}"; do
     if should_skip_subvolume "$SUBVOL"; then
-        ((SKIP_COUNT++))
+        SKIP_COUNT=$((SKIP_COUNT + 1))
+        log "[DEBUG] Will skip: $SUBVOL"
     else
-        ((MIGRATE_COUNT++))
+        MIGRATE_COUNT=$((MIGRATE_COUNT + 1))
+        log "[DEBUG] Will migrate: $SUBVOL"
     fi
 done
 
@@ -237,7 +238,7 @@ for SUBVOL in "${SUBVOLUMES[@]}"; do
     # Verify source subvolume exists
     if [ ! -d "$SRC_PATH" ]; then
         log "[!] WARNING: Source path $SRC_PATH does not exist - skipping"
-        ((FAILED++))
+        FAILED=$((FAILED + 1))
         echo
         continue
     fi
@@ -246,7 +247,7 @@ for SUBVOL in "${SUBVOLUMES[@]}"; do
     log "[…] Creating read-only snapshot: $SNAPSHOT_NAME"
     if ! btrfs subvolume snapshot -r "$SRC_PATH" "$SNAPSHOT_PATH" 2>/dev/null; then
         log "[!] WARNING: Failed to create snapshot of $SUBVOL (likely in use or inaccessible)"
-        ((FAILED++))
+        FAILED=$((FAILED + 1))
         echo
         continue
     fi
@@ -259,7 +260,7 @@ for SUBVOL in "${SUBVOLUMES[@]}"; do
         if [ -d "$SNAPSHOT_PATH" ]; then
             btrfs subvolume delete "$SNAPSHOT_PATH" 2>/dev/null || true
         fi
-        ((FAILED++))
+        FAILED=$((FAILED + 1))
         echo
         continue
     fi
@@ -272,7 +273,7 @@ for SUBVOL in "${SUBVOLUMES[@]}"; do
             # Try to clean up
             btrfs subvolume delete "$DEST_MOUNT/$SNAPSHOT_NAME" 2>/dev/null || true
             btrfs subvolume delete "$SNAPSHOT_PATH" 2>/dev/null || true
-            ((FAILED++))
+            FAILED=$((FAILED + 1))
             echo
             continue
         fi
@@ -280,7 +281,7 @@ for SUBVOL in "${SUBVOLUMES[@]}"; do
         log "[!] WARNING: Expected snapshot $SNAPSHOT_NAME not found at destination"
         # Clean up source snapshot
         btrfs subvolume delete "$SNAPSHOT_PATH" 2>/dev/null || true
-        ((FAILED++))
+        FAILED=$((FAILED + 1))
         echo
         continue
     fi
@@ -293,7 +294,7 @@ for SUBVOL in "${SUBVOLUMES[@]}"; do
     fi
     
     log "[✔] Successfully migrated $SUBVOL"
-    ((MIGRATED++))
+    MIGRATED=$((MIGRATED + 1))
     echo
 done
 
