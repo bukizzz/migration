@@ -25,34 +25,86 @@ echo
 # UNLOCK AND MOUNT SOURCE
 # ======================
 
-if [ -e "/dev/mapper/$MAPPER_NAME" ]; then
-    echo "[✔] Encrypted partition already mapped as /dev/mapper/$MAPPER_NAME"
-else
-    if mount | grep -q "$SRC_PART"; then
-        echo "[✖] ERROR: $SRC_PART appears mounted. Cannot proceed."
-        exit 1
+# Function to select mapper
+select_mapper() {
+    local mappers=()
+    
+    # Get all available mappers (excluding control)
+    while IFS= read -r mapper; do
+        [[ "$mapper" != "control" ]] && mappers+=("$mapper")
+    done < <(ls /dev/mapper/ 2>/dev/null | sort)
+    
+    if [ ${#mappers[@]} -eq 0 ]; then
+        echo "[!] No mapped devices found."
+        return 1
     fi
+    
+    echo "Available mapped devices:"
+    for i in "${!mappers[@]}"; do
+        echo "  $((i+1)). ${mappers[$i]}"
+    done
+    echo "  $((${#mappers[@]}+1)). Don't use a mapper (use $SRC_PART directly)"
+    echo
+    
+    while true; do
+        read -p "Select device to use (1-$((${#mappers[@]}+1))): " choice
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le $((${#mappers[@]}+1)) ]; then
+            if [ "$choice" -eq $((${#mappers[@]}+1)) ]; then
+                # User chose to use source partition directly
+                echo "direct"
+                return 0
+            else
+                # User chose a mapper
+                echo "${mappers[$((choice-1))]}"
+                return 0
+            fi
+        else
+            echo "Invalid choice. Please enter a number between 1 and $((${#mappers[@]}+1))."
+        fi
+    done
+}
 
-    if lsblk -no TYPE "$SRC_PART" | grep -q "crypt"; then
-        echo "[✖] ERROR: $SRC_PART is already a crypt volume."
-        exit 1
-    fi
+# Determine which device to use for mounting
+echo "[…] Checking for available devices..."
 
-    echo "[…] Unlocking $SRC_PART as $MAPPER_NAME"
-    cryptsetup open "$SRC_PART" "$MAPPER_NAME"
-    echo "[✔] Unlocked successfully"
-fi
-
-MAPPED_DEV="/dev/mapper/$MAPPER_NAME"
-if [ ! -b "$MAPPED_DEV" ]; then
-    echo "[✖] ERROR: No mapped device at $MAPPED_DEV"
+# Check if source partition is already mounted directly
+if mount | grep -q "$SRC_PART"; then
+    echo "[✖] ERROR: $SRC_PART appears to be mounted directly. Cannot proceed."
     exit 1
 fi
 
+# Let user select which device to use
+SELECTED_DEVICE=$(select_mapper)
+if [ $? -ne 0 ]; then
+    # No mappers available, check if we can use source directly or unlock it
+    if lsblk -no FSTYPE "$SRC_PART" | grep -q "crypto_LUKS"; then
+        echo "[…] No mappers available. Unlocking encrypted partition $SRC_PART as $MAPPER_NAME"
+        cryptsetup open "$SRC_PART" "$MAPPER_NAME"
+        echo "[✔] Unlocked successfully"
+        DEVICE_TO_MOUNT="/dev/mapper/$MAPPER_NAME"
+    else
+        echo "[…] No mappers available. Using unencrypted partition $SRC_PART directly"
+        DEVICE_TO_MOUNT="$SRC_PART"
+    fi
+elif [ "$SELECTED_DEVICE" = "direct" ]; then
+    DEVICE_TO_MOUNT="$SRC_PART"
+    echo "[…] Using $SRC_PART directly"
+else
+    DEVICE_TO_MOUNT="/dev/mapper/$SELECTED_DEVICE"
+    echo "[✔] Using existing mapper: $DEVICE_TO_MOUNT"
+fi
+
+# Verify device exists
+if [ ! -b "$DEVICE_TO_MOUNT" ]; then
+    echo "[✖] ERROR: No device at $DEVICE_TO_MOUNT"
+    exit 1
+fi
+
+# Mount the device
 mkdir -p "$SRC_MOUNT"
 if ! mountpoint -q "$SRC_MOUNT"; then
-    mount "$MAPPED_DEV" "$SRC_MOUNT"
-    echo "[✔] Mounted $MAPPED_DEV at $SRC_MOUNT"
+    mount "$DEVICE_TO_MOUNT" "$SRC_MOUNT"
+    echo "[✔] Mounted $DEVICE_TO_MOUNT at $SRC_MOUNT"
 else
     echo "[✔] Source already mounted at $SRC_MOUNT"
 fi
