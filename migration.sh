@@ -175,16 +175,34 @@ if [ "${#SUBVOLUMES[@]}" -eq 0 ]; then
     exit 1
 fi
 
+echo "[…] Found ${#SUBVOLUMES[@]} subvolumes to migrate"
+
 for SUBVOL in "${SUBVOLUMES[@]}"; do
     echo "[→] Migrating subvolume: $SUBVOL"
 
     SRC_PATH="$SRC_MOUNT/$SUBVOL"
-    DEST_PATH="$DEST_MOUNT/$SUBVOL"
+    SNAPSHOT_NAME="${SUBVOL}_snapshot_$(date +%s)"
+    SNAPSHOT_PATH="$SRC_MOUNT/$SNAPSHOT_NAME"
 
-    mkdir -p "$(dirname "$DEST_PATH")"
-
-    btrfs send "$SRC_PATH" | btrfs receive "$DEST_MOUNT"
-    echo "[✔] Sent $SUBVOL"
+    # Create read-only snapshot
+    echo "[…] Creating read-only snapshot: $SNAPSHOT_NAME"
+    btrfs subvolume snapshot -r "$SRC_PATH" "$SNAPSHOT_PATH"
+    
+    # Send snapshot to destination
+    echo "[…] Sending snapshot to destination"
+    btrfs send "$SNAPSHOT_PATH" | btrfs receive "$DEST_MOUNT"
+    
+    # Rename received snapshot to original name
+    if [ -d "$DEST_MOUNT/$SNAPSHOT_NAME" ]; then
+        echo "[…] Renaming received snapshot to $SUBVOL"
+        mv "$DEST_MOUNT/$SNAPSHOT_NAME" "$DEST_MOUNT/$SUBVOL"
+    fi
+    
+    # Clean up the temporary snapshot
+    echo "[…] Cleaning up temporary snapshot"
+    btrfs subvolume delete "$SNAPSHOT_PATH"
+    
+    echo "[✔] Migrated $SUBVOL"
 done
 
 echo
