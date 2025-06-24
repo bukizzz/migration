@@ -29,13 +29,19 @@ echo
 select_mapper() {
     local mappers=()
     
+    echo "[DEBUG] Starting mapper detection..."
+    
     # Get all available mappers (excluding control)
     for mapper in /dev/mapper/*; do
         mapper_name=$(basename "$mapper")
+        echo "[DEBUG] Found: $mapper_name"
         if [[ "$mapper_name" != "control" ]]; then
             mappers+=("$mapper_name")
+            echo "[DEBUG] Added: $mapper_name"
         fi
     done
+    
+    echo "[DEBUG] Total mappers found: ${#mappers[@]}"
     
     if [ ${#mappers[@]} -eq 0 ]; then
         echo "[!] No mapped devices found."
